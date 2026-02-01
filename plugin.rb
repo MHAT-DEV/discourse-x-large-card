@@ -1,47 +1,59 @@
 # name: discourse-x-large-card
-# about: Forces X (Twitter) to use summary_large_image card when possible
-# version: 0.3
+# about: Override only twitter:card to summary_large_image when image exists
+# version: 1.1
 # author: TheFacto.ORG
 # url: https://github.com/MHAT-DEV/discourse-x-large-card
 # transpile_js: true
 
 after_initialize do
   module ::XLargeCardPatch
-    def crawlable_meta_data(opts = nil)
-      opts ||= {}
+    OG_OR_TW_IMAGE_REGEX = /
+      <meta\s+
+      (?:property=["']og:image(?:[:\w]+)?["']|
+       name=["']twitter:image(?:[:\w]+)?["'])
+      \s+content=["']([^"']+)["']
+      [^>]*>
+    /ix
 
-      # เรียก core เดิมก่อนเสมอ
-      html = super(opts)
+    TWITTER_CARD_REGEX = /
+      <meta\s+
+      name=["']twitter:card["']
+      \s+content=["'][^"']+["']
+      [^>]*>
+    /ix
+
+    def crawlable_meta_data(opts = nil)
+      html = super(opts || {})
 
       return html unless respond_to?(:tag)
 
-      x_image =
-        opts[:twitter_summary_large_image].presence ||
-        opts[:image].presence ||
-        SiteSetting.site_twitter_summary_large_image_url.presence ||
-        SiteSetting.site_opengraph_image_url.presence
+      # ตรวจว่ามี image สำหรับ preview หรือไม่
+      has_preview_image = html.match?(OG_OR_TW_IMAGE_REGEX)
+      return html unless has_preview_image
 
-      return html if x_image.blank?
-
-      if respond_to?(:get_absolute_image_url)
-        x_image = get_absolute_image_url(x_image)
-      end
-
-      # ป้องกัน meta ซ้ำ
-      unless html.include?("twitter:card")
-        html << "\n" << tag(:meta, name: "twitter:card", content: "summary_large_image")
-      end
-
-      unless html.include?("twitter:image")
-        html << "\n" << tag(:meta, name: "twitter:image", content: x_image)
+      # ถ้ามี twitter:card อยู่แล้ว → แทนที่เฉพาะ content
+      if html.match?(TWITTER_CARD_REGEX)
+        html = html.gsub(
+          TWITTER_CARD_REGEX,
+          tag(:meta, name: "twitter:card", content: "summary_large_image")
+        )
+      else
+        # ถ้า core ไม่ใส่มา → ใส่เพิ่ม
+        html << "\n" << tag(
+          :meta,
+          name: "twitter:card",
+          content: "summary_large_image"
+        )
       end
 
       html
     rescue => e
-      Rails.logger.warn("[discourse-x-large-card] #{e.class}: #{e.message}")
-      super(opts)
+      Rails.logger.warn(
+        "[discourse-x-large-card] PARTIAL OVERRIDE FAILED: #{e.class} #{e.message}"
+      )
+      html
     end
   end
 
-  ::ApplicationHelper.prepend(XLargeCardPatch)
+  ::ApplicationHelper.prepend(::XLargeCardPatch)
 end
