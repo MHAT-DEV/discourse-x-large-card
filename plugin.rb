@@ -1,59 +1,72 @@
 # name: discourse-x-large-card
-# about: Override only twitter:card to summary_large_image when image exists
-# version: 1.1
+# about: Force summary_large_image when any preview image exists (core-style override)
+# version: 0.4
 # author: TheFacto.ORG
 # url: https://github.com/MHAT-DEV/discourse-x-large-card
 # transpile_js: true
 
 after_initialize do
-  module ::XLargeCardPatch
-    OG_OR_TW_IMAGE_REGEX = /
-      <meta\s+
-      (?:property=["']og:image(?:[:\w]+)?["']|
-       name=["']twitter:image(?:[:\w]+)?["'])
-      \s+content=["']([^"']+)["']
-      [^>]*>
-    /ix
+  reloadable_patch do |plugin|
+    ApplicationHelper.module_eval do
 
-    TWITTER_CARD_REGEX = /
-      <meta\s+
-      name=["']twitter:card["']
-      \s+content=["'][^"']+["']
-      [^>]*>
-    /ix
+      def crawlable_meta_data(opts = nil)
+        opts ||= {}
+        opts[:url] ||= "#{Discourse.base_url_no_prefix}#{request.fullpath}"
 
-    def crawlable_meta_data(opts = nil)
-      html = super(opts || {})
+        # === core logic เดิม: เตรียม image ===
+        if opts[:image].blank?
+          opts[:image] = SiteSetting.site_opengraph_image_url
+        end
 
-      return html unless respond_to?(:tag)
+        opts[:image] = get_absolute_image_url(opts[:image]) if opts[:image].present?
 
-      # ตรวจว่ามี image สำหรับ preview หรือไม่
-      has_preview_image = html.match?(OG_OR_TW_IMAGE_REGEX)
-      return html unless has_preview_image
+        # === render meta ===
+        result = []
+        result << tag(:meta, property: 'og:site_name', content: SiteSetting.title)
 
-      # ถ้ามี twitter:card อยู่แล้ว → แทนที่เฉพาะ content
-      if html.match?(TWITTER_CARD_REGEX)
-        html = html.gsub(
-          TWITTER_CARD_REGEX,
-          tag(:meta, name: "twitter:card", content: "summary_large_image")
-        )
-      else
-        # ถ้า core ไม่ใส่มา → ใส่เพิ่ม
-        html << "\n" << tag(
-          :meta,
-          name: "twitter:card",
-          content: "summary_large_image"
-        )
+        # === 🔥 จุดเปลี่ยนสำคัญ ===
+        # ถ้ามี image ไม่ว่ามาจากไหน → large เสมอ
+        if opts[:image].present?
+          result << tag(:meta, name: 'twitter:card', content: "summary_large_image")
+          result << tag(:meta, name: 'twitter:image', content: opts[:image])
+          result << tag(:meta, property: "og:image", content: opts[:image])
+        else
+          result << tag(:meta, name: 'twitter:card', content: "summary")
+        end
+
+        # === ส่วนอื่นคงเดิมทั้งหมด ===
+        [:url, :title, :description].each do |property|
+          if opts[property].present?
+            content =
+              property == :url ? opts[property] : gsub_emoji_to_unicode(opts[property])
+
+            result << tag(:meta, { property: "og:#{property}", content: content }, nil, true)
+            result << tag(:meta, { name: "twitter:#{property}", content: content }, nil, true)
+          end
+        end
+
+        if opts[:read_time] && opts[:read_time] > 0 &&
+           opts[:like_count] && opts[:like_count] > 0
+          result << tag(:meta, name: 'twitter:label1', value: I18n.t("reading_time"))
+          result << tag(:meta, name: 'twitter:data1', value: "#{opts[:read_time]} mins 🕑")
+          result << tag(:meta, name: 'twitter:label2', value: I18n.t("likes"))
+          result << tag(:meta, name: 'twitter:data2', value: "#{opts[:like_count]} ❤")
+        end
+
+        if opts[:published_time]
+          result << tag(:meta, property: 'article:published_time', content: opts[:published_time])
+        end
+
+        if opts[:ignore_canonical]
+          result << tag(:meta, property: 'og:ignore_canonical', content: true)
+        end
+
+        result.join("\n")
+      rescue => e
+        Rails.logger.warn("[discourse-x-large-card] #{e.class}: #{e.message}")
+        super(opts)
       end
 
-      html
-    rescue => e
-      Rails.logger.warn(
-        "[discourse-x-large-card] PARTIAL OVERRIDE FAILED: #{e.class} #{e.message}"
-      )
-      html
     end
   end
-
-  ::ApplicationHelper.prepend(::XLargeCardPatch)
 end
